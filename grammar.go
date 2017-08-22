@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
@@ -117,11 +118,14 @@ type matchAtom struct {
 	atom  string
 	ref   *matcher
 	exact bool
+	re    *regexp.Regexp
 }
 
 func (t *matchAtom) match(s string, offset int) (n int, result *matchResult) {
+	debug("matchAtom->match [offset=%d]", offset)
 	switch {
 	case t.exact:
+		debug("matchAtom->match exactMatch")
 		if len(s) < offset+len(t.atom) {
 			return 0, nil
 		}
@@ -130,9 +134,16 @@ func (t *matchAtom) match(s string, offset int) (n int, result *matchResult) {
 		}
 		return 0, nil
 	case t.ref != nil:
+		debug("matchAtom->match ref")
 		return t.ref.match(s, offset)
 	default:
-		// TODO
+		debug("matchAtom->match regexp")
+		// FIXME get rid of double matching
+		if !t.re.Match([]byte(s[offset:])) {
+			return 0, nil
+		}
+		m := t.re.FindString(s[offset:])
+		return len(m), &matchResult{match: m}
 	}
 
 	return 0, nil
@@ -154,7 +165,14 @@ func (t *matchAtom) init(g *grammar) (ref *matcher, err error) {
 		strings.HasSuffix(t.atom, "'") {
 		t.exact = true
 		t.atom = t.atom[1 : len(t.atom)-1]
+		return nil, nil
 	}
+
+	re, err := regexp.Compile(t.atom)
+	if err != nil {
+		return nil, err
+	}
+	t.re = re
 
 	return nil, nil
 }

@@ -62,6 +62,19 @@ var matcherTests = []matcherTest{
 			},
 		},
 	},
+	{
+		"foo",
+		`grammar foo { token TOP { <bar> } token bar { .* } }`,
+		"exact match",
+		&matchResult{
+			match: "exact match",
+			children: map[string]*matchResult{
+				"bar": &matchResult{
+					match: "exact match",
+				},
+			},
+		},
+	},
 }
 
 func TestMain(t *testing.T) {
