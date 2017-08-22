@@ -6,8 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
+
+	"github.com/davecgh/go-spew/spew"
 )
+
+var debugEnabled = true
+
+func debug(msg string, args ...interface{}) {
+	if debugEnabled {
+		log.Printf(msg, args...)
+	}
+}
 
 const (
 	expectingGrammar = iota
@@ -30,27 +41,71 @@ type grammar struct {
 	top     *matcher
 }
 
-func (g grammar) Match(s string) bool {
-	g.top.Match(s)
-	return false
+type matchResult struct {
+	match    string
+	children map[string]*matchResult
+}
+
+func (g grammar) Match(s string) (int, *matchResult) {
+	n, match := g.top.match(s, 0)
+	debug("grammar->Match [n=%d, match=%+v]", n, spew.Sdump(match))
+	if match != nil {
+		match = match.children["TOP"]
+	}
+	return n, match
 }
 
 type matcher struct {
 	name  string
 	typ   int
-	match []*matchAtom
+	atoms []*matchAtom
 }
 
-func (t matcher) Match(s string) bool {
+func (t matcher) match(s string, offset int) (n int, result *matchResult) {
+	debug("matcher->Match [offset=%d]", offset)
 	switch t.typ {
 	case matchTypeRule:
+		debug("matcher->Match rule")
+		mR := matchResult{
+			children: make(map[string]*matchResult),
+		}
+		o := offset
+		for _, a := range t.atoms {
+			n, m := a.match(s, o)
+			if m == nil {
+				return 0, nil
+			}
+			o += n
+			mR.children[t.name] = m
+		}
+		debug("matcher->Match result [offset=%d, o=%d]", offset, o)
+		mR.match = s[offset : o-offset]
+		return o, &mR
 	case matchTypeToken:
+		debug("matcher->Match token")
+		mR := matchResult{
+			children: make(map[string]*matchResult),
+		}
+		o := offset
+		for _, a := range t.atoms {
+			n, m := a.match(s, o)
+			if m == nil {
+				return 0, nil
+			}
+			o += n
+			mR.children[t.name] = m
+		}
+		debug("matcher->Match result [offset=%d, o=%d]", offset, o)
+		mR.match = s[offset : o-offset]
+		return o, &mR
+	default:
+		debug("unknown matcher type")
 	}
-	return false
+	return 0, nil
 }
 
 func (t *matcher) init(g *grammar) error {
-	for _, a := range t.match {
+	for _, a := range t.atoms {
 		if _, err := a.init(g); err != nil {
 			return err
 		}
@@ -59,8 +114,28 @@ func (t *matcher) init(g *grammar) error {
 }
 
 type matchAtom struct {
-	atom string
-	ref  *matcher
+	atom  string
+	ref   *matcher
+	exact bool
+}
+
+func (t *matchAtom) match(s string, offset int) (n int, result *matchResult) {
+	switch {
+	case t.exact:
+		if len(s) < offset+len(t.atom) {
+			return 0, nil
+		}
+		if s[offset:len(t.atom)] == t.atom {
+			return len(t.atom), &matchResult{match: t.atom}
+		}
+		return 0, nil
+	case t.ref != nil:
+		return t.ref.match(s, offset)
+	default:
+		// TODO
+	}
+
+	return 0, nil
 }
 
 func (t *matchAtom) init(g *grammar) (ref *matcher, err error) {
@@ -75,12 +150,19 @@ func (t *matchAtom) init(g *grammar) (ref *matcher, err error) {
 		return tr, nil
 	}
 
+	if strings.HasPrefix(t.atom, "'") &&
+		strings.HasSuffix(t.atom, "'") {
+		t.exact = true
+		t.atom = t.atom[1 : len(t.atom)-1]
+	}
+
 	return nil, nil
 }
 
 type parsed map[string]*grammar
 
 func parse(tokens []string) (parsed parsed, err error) {
+	debug("parse")
 	parsed = make(map[string]*grammar)
 	var gram *grammar
 	var tokOrRule *matcher
@@ -89,8 +171,11 @@ func parse(tokens []string) (parsed parsed, err error) {
 	var state = expectingGrammar
 
 	for _, tok := range tokens {
+		debug("parse [token=%s]", tok)
+
 		switch state {
 		case expectingGrammar:
+			debug("parse -> expecting grammar")
 			if tok != "grammar" {
 				err = fmt.Errorf("expecting grammar, got %s", tok)
 				return
@@ -102,6 +187,7 @@ func parse(tokens []string) (parsed parsed, err error) {
 			}
 			continue
 		case expectingLabel:
+			debug("parse -> expecting label")
 			switch ctx {
 			case ctxGrammar:
 				gram.name = tok
@@ -111,6 +197,7 @@ func parse(tokens []string) (parsed parsed, err error) {
 			state = expectingOpenCurly
 			continue
 		case expectingOpenCurly:
+			debug("parse -> expecting open curly")
 			if tok != "{" {
 				err = fmt.Errorf("expecting open curly, got %s", tok)
 				return
@@ -123,6 +210,7 @@ func parse(tokens []string) (parsed parsed, err error) {
 			}
 			continue
 		case expectingMatch:
+			debug("parse -> expecting matcher")
 			tokOrRule = &matcher{}
 			switch tok {
 			case "token":
@@ -148,13 +236,14 @@ func parse(tokens []string) (parsed parsed, err error) {
 			ctx = ctxmatcher
 			state = expectingLabel
 		case expectingMatchContents:
+			debug("parse -> expecting matcher body")
 			switch tok {
 			case "}":
 				state = expectingMatch
 				gram.entries[tokOrRule.name] = tokOrRule
 				tokOrRule = &matcher{}
 			default:
-				tokOrRule.match = append(tokOrRule.match, &matchAtom{atom: tok})
+				tokOrRule.atoms = append(tokOrRule.atoms, &matchAtom{atom: tok})
 			}
 		default:
 			err = fmt.Errorf("unexpected state, got %s", tok)
@@ -180,6 +269,12 @@ func tokenise(s string) (tokens []string, err error) {
 	//var esc bool
 
 	rdr := bufio.NewReader(bytes.NewReader([]byte(s)))
+
+	defer func() {
+		if len(buf) > 0 {
+			tokens = append(tokens, buf)
+		}
+	}()
 
 	for {
 		r, l, err := rdr.ReadRune()

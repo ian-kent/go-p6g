@@ -6,10 +6,16 @@ import (
 	"github.com/davecgh/go-spew/spew"
 )
 
+// var _, _ = G("foo",
+// 	T("TOP", "<baz>"),
+// 	R("bar", ".*"),
+// 	R("baz", "'exact match'"),
+// )
+
 func main() {
 	var example = `
 grammar foo {
-	token TOP { <bar> }
+	token TOP { <baz> }
 	rule bar { .* }
 	rule baz { 'exact match' }
 }
@@ -27,5 +33,9 @@ grammar foo {
 
 	spew.Dump(parsed)
 
-	parsed["foo"].Match("test")
+	n, match := parsed["foo"].Match("test")
+	spew.Dump(n, match)
+
+	n, match = parsed["foo"].Match("exact match")
+	spew.Dump(n, match)
 }
